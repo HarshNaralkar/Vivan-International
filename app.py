@@ -9,15 +9,11 @@ import requests
 from pdfrw import PdfReader, PdfWriter, PageMerge
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-import subprocess
 import time
 
 app = Flask(__name__, static_folder='static', template_folder='static')
 OUTPUT_FOLDER = 'output'
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-current_session_id = None
-current_file_prefix = None
 
 COMPANY_TEMPLATES = {
     "ROYAL_SKY_INTERNATIONAL": 'templates/ROYAL',
@@ -30,6 +26,9 @@ SHEET_NAME = {
     "NEW_VISION": 'NV',
     "SNS_GLOBLE": 'SNS'
 }
+
+def get_abs_path(*parts):
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), *parts))
 
 def replace_placeholders(doc, replacements):
     for paragraph in doc.paragraphs:
@@ -60,7 +59,7 @@ def _replace_in_runs(runs, placeholder, value):
                 run.text = before + value + after
                 left = end - (current + run_len)
                 if left > 0:
-                    _remove_placeholder_from_next_runs(runs, runs.index(run)+1, left)
+                    _remove_placeholder_from_next_runs(runs, runs.index(run) + 1, left)
                 break
             current += run_len
         full_text = ''.join(run.text for run in runs)
@@ -94,76 +93,46 @@ def fill_pdf_template(input_pdf_path, output_pdf_path, replacements):
     PdfWriter(output_pdf_path, trailer=template_pdf).write()
 
 def convert_docx_to_pdf(docx_path, output_dir=None, timeout=30):
-    """
-    Convert a DOCX file to PDF using LibreOffice (soffice) on Linux.
-    :param docx_path: Path to the input DOCX file.
-    :param output_dir: Directory to save the output PDF. If None, uses the DOCX directory.
-    :param timeout: Timeout for the conversion process in seconds.
-    :return: Path to the generated PDF file.
-    :raises: Exception if conversion fails.
-    """
-    libreoffice_path = '/usr/lib/libreoffice/program/soffice'  # FULL path to soffice
     if output_dir is None:
         output_dir = os.path.dirname(docx_path)
-    os.makedirs(output_dir, exist_ok=True)
-    cmd = [
-        libreoffice_path,
-        '--headless',
-        '--convert-to', 'pdf',
-        '--outdir', output_dir,
-        docx_path
-    ]
-    env = os.environ.copy()
-    env["HOME"] = "/tmp"  # Ensures headless mode works
     try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
-        if result.returncode != 0:
-            raise Exception(f"LibreOffice conversion failed: {result.stderr.decode()}")
-        pdf_filename = os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
-        pdf_path = os.path.join(output_dir, pdf_filename)
-        if not os.path.exists(pdf_path):
-            raise Exception("PDF file was not created.")
-        return pdf_path
+        with open(docx_path, 'rb') as f:
+            files = {'file': (os.path.basename(docx_path), f, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
+            response = requests.post('http://localhost:3001/convert', files=files, timeout=timeout)
+            if response.status_code != 200:
+                raise Exception("Failed to convert using unoconv API")
+            pdf_filename = os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            with open(pdf_path, 'wb') as out_file:
+                out_file.write(response.content)
+            return pdf_path
     except Exception as e:
-        print(f"PDF conversion error: {e}")
-        raise Exception(f"Error converting DOCX to PDF: {e}")
+        raise Exception(f"Error converting DOCX to PDF via unoconv API: {e}")
 
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
 
-@app.route('/set-template', methods=['POST'])
-def set_template():
-    data = request.get_json()
-    dropdown_data = data.get("company_name_dropdown")
-    TEMPLATE_FOLDER = COMPANY_TEMPLATES.get(dropdown_data)
-    SHEET = SHEET_NAME.get(dropdown_data)
-    app.config["TEMPLATE_FOLDER"] = TEMPLATE_FOLDER
-    app.config["SHEET_NAME"] = SHEET
-    google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
-    app.config["GOOGLE_SHEET_URL"] = google_sheet_url
-    print(f"Using folder: {TEMPLATE_FOLDER}")
-    print(f"Using sheet: {SHEET}")
-    print(f"Using sheet URL: {google_sheet_url}")
-    return jsonify({"message": "Template and sheet set successfully"})
-
 @app.route('/process', methods=['POST'])
 def process():
-    global current_session_id, current_file_prefix
     try:
         data = request.get_json()
         passport_number = data.get("passportNumber")
         output_format = data.get("outputFormat", "pdf")
-        sheet_name = app.config.get("SHEET_NAME")
-        google_sheet_url = app.config.get("GOOGLE_SHEET_URL")
-        TEMPLATE_FOLDER = app.config.get("TEMPLATE_FOLDER")
-        if not TEMPLATE_FOLDER or not os.path.exists(TEMPLATE_FOLDER):
-            return jsonify({"success": False, "message": f"Template folder not found: {TEMPLATE_FOLDER}"})
-        if not google_sheet_url:
-            return jsonify({"success": False, "message": "Google Sheet URL not set. Please select a company first."})
+        company_name = data.get("company_name_dropdown")
+        if not company_name or company_name not in COMPANY_TEMPLATES:
+            return jsonify({"success": False, "message": "Invalid or missing company name."})
+        TEMPLATE_FOLDER = COMPANY_TEMPLATES[company_name]
+        SHEET = SHEET_NAME[company_name]
+        # Use absolute path for template folder
+        TEMPLATE_FOLDER_ABS = get_abs_path(TEMPLATE_FOLDER)
+        if not os.path.exists(TEMPLATE_FOLDER_ABS):
+            return jsonify({"success": False, "message": f"Template folder not found: {TEMPLATE_FOLDER_ABS}"})
 
+        # Google Sheet URL (you may want to make this dynamic)
+        google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
         sheet_id = google_sheet_url.split("/d/")[1].split("/")[0]
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={SHEET}"
         response = requests.get(csv_url)
         response.raise_for_status()
         csv_data = response.text
@@ -204,13 +173,12 @@ def process():
         phoneno = passport_data['PHONENO']
         passport_data['PHONENO'] = phoneno
 
-        templates_path = os.path.join(TEMPLATE_FOLDER, str(country_name))
+        templates_path = os.path.join(TEMPLATE_FOLDER_ABS, str(country_name))
         if not os.path.exists(templates_path):
             return jsonify({"success": False, "message": f"Templates not found for country: {country_name}"})
 
         session_id = str(uuid.uuid4())
-        current_session_id = session_id
-        current_file_prefix = f"{sr_no} {passport_number}"
+        file_prefix = f"{sr_no} {passport_number}"
         session_output = os.path.join(OUTPUT_FOLDER, session_id)
         os.makedirs(session_output, exist_ok=True)
 
@@ -262,7 +230,7 @@ def process():
                     "url": f"/download/{session_id}/{output_name}.docx"
                 })
 
-        return jsonify({"success": True, "files": files})
+        return jsonify({"success": True, "files": files, "session_id": session_id, "file_prefix": file_prefix})
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -276,6 +244,7 @@ def download(session_id, filename):
     @after_this_request
     def cleanup(response):
         try:
+            # Wait a moment to ensure file is not locked (especially after conversion)
             time.sleep(0.3)
             os.remove(file_path)
             session_dir = os.path.join(OUTPUT_FOLDER, session_id)
@@ -284,18 +253,14 @@ def download(session_id, filename):
         except Exception as e:
             print(f"Cleanup error: {e}")
         return response
+
     return send_file(file_path, as_attachment=True)
 
-@app.route('/download-all', methods=['GET', 'POST'])
+@app.route('/download-all', methods=['POST'])
 def download_all():
-    global current_session_id, current_file_prefix
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        session_id = data.get('session_id', current_session_id)
-        file_prefix = data.get('file_prefix', current_file_prefix)
-    else:
-        session_id = current_session_id
-        file_prefix = current_file_prefix
+    data = request.get_json() or {}
+    session_id = data.get('session_id')
+    file_prefix = data.get('file_prefix')
     if not session_id:
         return "No files to download. Generate documents first.", 404
     session_dir = os.path.join(OUTPUT_FOLDER, session_id)
