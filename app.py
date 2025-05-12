@@ -102,18 +102,21 @@ def convert_docx_to_pdf(docx_path, output_dir=None, timeout=30):
     :return: Path to the generated PDF file.
     :raises: Exception if conversion fails.
     """
+    libreoffice_path = '/usr/lib/libreoffice/program/soffice'  # FULL path to soffice
     if output_dir is None:
         output_dir = os.path.dirname(docx_path)
     os.makedirs(output_dir, exist_ok=True)
     cmd = [
-        'soffice',  # or 'libreoffice' if that's the command on your system
+        libreoffice_path,
         '--headless',
         '--convert-to', 'pdf',
         '--outdir', output_dir,
         docx_path
     ]
+    env = os.environ.copy()
+    env["HOME"] = "/tmp"  # Ensures headless mode works
     try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=env)
         if result.returncode != 0:
             raise Exception(f"LibreOffice conversion failed: {result.stderr.decode()}")
         pdf_filename = os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
@@ -273,7 +276,6 @@ def download(session_id, filename):
     @after_this_request
     def cleanup(response):
         try:
-            # Wait a moment to ensure file is not locked (especially after conversion)
             time.sleep(0.3)
             os.remove(file_path)
             session_dir = os.path.join(OUTPUT_FOLDER, session_id)
@@ -282,7 +284,6 @@ def download(session_id, filename):
         except Exception as e:
             print(f"Cleanup error: {e}")
         return response
-
     return send_file(file_path, as_attachment=True)
 
 @app.route('/download-all', methods=['GET', 'POST'])
