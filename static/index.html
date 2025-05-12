@@ -704,128 +704,102 @@ function downloadAllFiles() {
 }
 
 
-document.addEventListener('DOMContentLoaded', function () {
-  const companyInput = document.getElementById('company');
-  const selectedCompany = document.getElementById('selected-company');
+// Custom Dropdown JS
+document.addEventListener('DOMContentLoaded', function() {
   const select = document.querySelector('.select');
-  const options = document.querySelectorAll('.option');
-  const resultDiv = document.getElementById('result');
+  const selected = select.querySelector('.selected');
+  const options = select.querySelector('.options');
+  const hiddenInput = document.getElementById('company');
+  const optionsList = options.querySelectorAll('.option');
 
-  // Function to collect form data and send to backend
-  async function generateDocuments() {
-    const company = companyInput.value;
-    if (!company) {
-      alert('Please select a company.');
-      return;
-    }
-
-    const passportNumber = document.getElementById('passportNumber').value.trim();
-    if (!passportNumber) {
-      alert('Please enter a passport number.');
-      return;
-    }
-
-    const selectedDocs = Array.from(document.querySelectorAll('input[type="checkbox"]:checked'))
-      .map(cb => cb.value);
-
-    if (selectedDocs.length === 0) {
-      alert('Please select at least one document.');
-      return;
-    }
-
-    const outputFormat = "pdf";
-
-    const payload = {
-      passportNumber,
-      outputFormat,
-      company_name_dropdown: company,
-      selectedDocs
-    };
-
-    resultDiv.innerHTML = '<div>Generating documents, please wait...</div>';
-
-    try {
-      const response = await fetch('/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        let html = '<h3>Documents Ready:</h3><ul>';
-        data.files.forEach(file => {
-          html += `<li>
-            <a class="download-label" href="${file.url}" download>
-              <span class="circle"><svg class="icon" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 20h14v-2H5v2zm7-18c-1.1 0-2 .9-2 2v8H8l4 4 4-4h-2V4c0-1.1-.9-2-2-2z"/></svg></span>
-              <span class="title">${file.name}</span>
-            </a>
-          </li>`;
-        });
-        html += '</ul>';
-        html += `<button class="download-all" id="downloadAllBtn">Download All as ZIP</button>`;
-        resultDiv.innerHTML = html;
-
-        document.getElementById('downloadAllBtn').onclick = function () {
-          fetch('/download-all', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: data.session_id,
-              file_prefix: data.file_prefix
-            })
-          })
-          .then(res => {
-            if (!res.ok) throw new Error('Failed to download ZIP');
-            return res.blob();
-          })
-          .then(blob => {
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = (data.file_prefix || 'all_documents') + '.zip';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-          })
-          .catch(err => {
-            alert('Download failed: ' + err.message);
-          });
-        };
-
-      } else {
-        resultDiv.innerHTML = `<div class="error">${data.message}</div>`;
-      }
-    } catch (err) {
-      resultDiv.innerHTML = `<div class="error">Error: ${err.message}</div>`;
-    }
-  }
-
-  // Dropdown open/close logic
-  select.addEventListener('click', function () {
+  selected.addEventListener('click', () => {
     select.classList.toggle('open');
+    options.style.display = select.classList.contains('open') ? 'flex' : 'none';
   });
 
-  // When user selects a company option
-  options.forEach(option => {
-    option.addEventListener('click', function (e) {
-      e.stopPropagation();
-      const value = this.getAttribute('data-value');
-      selectedCompany.textContent = this.textContent;
-      companyInput.value = value;
+  optionsList.forEach(option => {
+    option.addEventListener('click', () => {
+      selected.textContent = option.textContent;
+      hiddenInput.value = option.dataset.value;
+      // FIX: Trigger change event so /set-template is called!
+      hiddenInput.dispatchEvent(new Event('change'));
       select.classList.remove('open');
-
-      // Trigger document generation immediately on selection
-      generateDocuments();
+      options.style.display = 'none';
     });
   });
 
-  document.addEventListener('click', function (e) {
+  // Close dropdown when clicking outside
+  document.addEventListener('click', function(e) {
     if (!select.contains(e.target)) {
       select.classList.remove('open');
+      options.style.display = 'none';
     }
+  });
+});
+
+document.getElementById('trackForm').addEventListener('submit', function(event) {
+  event.preventDefault();
+  const passportNumber = document.getElementById('passportNumber').value;
+  const outputFormat = document.querySelector('input[name="outputFormat"]:checked').value;
+  const company = document.getElementById('company').value;
+
+  // Collect checked document types
+  const docCheckboxes = document.querySelectorAll('.checkbox-wrapper .check');
+  const selectedDocs = Array.from(docCheckboxes)
+    .filter(cb => cb.checked)
+    .map(cb => cb.value);
+
+  if (!company) {
+    alert('Please select a company');
+    return;
+  }
+  if (selectedDocs.length === 0) {
+    alert('Please select at least one document');
+    return;
+  }
+
+  document.getElementById('result').innerHTML = '<p>Processing...</p>';
+
+  fetch('/process', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      passportNumber: passportNumber,
+      outputFormat: outputFormat,
+      company: company,
+      selectedDocs: selectedDocs // <-- send selected docs
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      let resultHTML = '<h3>Documents generated</h3><ul>';
+      data.files.forEach(file => {
+        resultHTML += `<li>${file.name} ${createDownloadButton(file.url, file.name)}</li>`;
+      });
+      resultHTML += '</ul>';
+      if (data.files.length > 1) {
+        resultHTML += `<button class="download-all" onclick="downloadAllFiles()">Download All</button>`;
+      }
+      document.getElementById('result').innerHTML = resultHTML;
+    } else {
+      document.getElementById('result').innerHTML = `<p class="error">${data.message || data.error || 'Error generating documents'}</p>`;
+    }
+  })
+  .catch(error => {
+    document.getElementById('result').innerHTML = `<p class="error">Network or server error: ${error.message}</p>`;
+  });
+});
+
+document.getElementById('company').addEventListener('change', function() {
+  fetch('/set-template', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ company_name_dropdown: this.value })
+  })
+  .then(response => response.json())
+  .then(data => {
+    console.log('/set-template response:', data);
   });
 });
 
