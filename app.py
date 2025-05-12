@@ -16,7 +16,7 @@ import subprocess  # For LibreOffice conversion on Linux
 try:
     from docx2pdf import convert
     import pythoncom
-    DOCX2PDF_AVAILABLE = True
+    DOCX2PDF_AVAILABLE = False
 except ImportError:
     DOCX2PDF_AVAILABLE = False
 
