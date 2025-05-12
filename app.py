@@ -6,16 +6,6 @@ import uuid
 import io
 import zipfile
 import requests
-from datetime import datetime
-import random
-
-try:
-    from docx2pdf import convert
-    import pythoncom
-    DOCX2PDF_AVAILABLE = True
-except ImportError:
-    DOCX2PDF_AVAILABLE = False
-
 from pdfrw import PdfReader, PdfWriter, PageMerge
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -40,7 +30,6 @@ SHEET_NAME = {
     "NEW_VISION": 'NV',
     "SNS_GLOBLE": 'SNS'
 }
-# === END NEW CODE ===
 
 def replace_placeholders(doc, replacements):
     for paragraph in doc.paragraphs:
@@ -136,30 +125,6 @@ def convert_docx_to_pdf(docx_path, output_dir=None, timeout=30):
         print(f"PDF conversion error: {e}")
         raise Exception(f"Error converting DOCX to PDF: {e}")
 
-def convert_docx_to_pdf_linux(input_path, output_path):
-    """
-    Converts DOCX to PDF using LibreOffice on Linux/Ubuntu.
-    """
-    try:
-        subprocess.run([
-            'libreoffice', '--headless', '--convert-to', 'pdf',
-            '--outdir', os.path.dirname(output_path),
-            input_path
-        ], check=True)
-        base = os.path.basename(input_path)
-        converted_path = os.path.join(
-            os.path.dirname(output_path),
-            os.path.splitext(base)[0] + '.pdf'
-        )
-        if os.path.exists(converted_path):
-            os.rename(converted_path, output_path)
-            return True
-        return False
-    except Exception as e:
-        print(f"LibreOffice PDF conversion error: {e}")
-        raise
-
-
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
@@ -169,12 +134,9 @@ def set_template():
     data = request.get_json()
     dropdown_data = data.get("company_name_dropdown")
     TEMPLATE_FOLDER = COMPANY_TEMPLATES.get(dropdown_data)
-    if not TEMPLATE_FOLDER or not os.path.exists(TEMPLATE_FOLDER):
-        return jsonify({"success": False, "message": f"Template folder not found: {TEMPLATE_FOLDER}"})
     SHEET = SHEET_NAME.get(dropdown_data)
     app.config["TEMPLATE_FOLDER"] = TEMPLATE_FOLDER
     app.config["SHEET_NAME"] = SHEET
-    # ✅ Hard-coded sheet URL here
     google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
     app.config["GOOGLE_SHEET_URL"] = google_sheet_url
     print(f"Using folder: {TEMPLATE_FOLDER}")
@@ -279,20 +241,23 @@ def process():
             replace_placeholders(doc, replacements)
             output_docx = os.path.join(session_output, f"{output_name}.docx")
             doc.save(output_docx)
-
-            if output_format == "pdf" and DOCX2PDF_AVAILABLE:
-                output_pdf = os.path.join(session_output, f"{output_name}.pdf")
-                convert_docx_to_pdf_safe(output_docx, output_pdf)
-                files.append({
-                    "name": f"{output_name}.pdf",
-                    "url": f"/download/{session_id}/{output_name}.pdf"
-                })
+            if output_format == "pdf":
+                try:
+                    output_pdf = convert_docx_to_pdf(output_docx, session_output)
+                    files.append({
+                        "name": f"{output_name}.pdf",
+                        "url": f"/download/{session_id}/{output_name}.pdf"
+                    })
+                except Exception as e:
+                    files.append({
+                        "name": f"{output_name}.docx",
+                        "url": f"/download/{session_id}/{output_name}.docx"
+                    })
             else:
                 files.append({
                     "name": f"{output_name}.docx",
                     "url": f"/download/{session_id}/{output_name}.docx"
                 })
-
 
         return jsonify({"success": True, "files": files})
 
