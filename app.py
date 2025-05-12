@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, send_file
+from flask import Flask, request, jsonify, send_file, after_this_request
 import os
 import pandas as pd
 from docx import Document
@@ -6,19 +6,11 @@ import uuid
 import io
 import zipfile
 import requests
-from datetime import datetime
-import random
-
-try:
-    from docx2pdf import convert
-    import pythoncom
-    DOCX2PDF_AVAILABLE = True
-except ImportError:
-    DOCX2PDF_AVAILABLE = False
-
 from pdfrw import PdfReader, PdfWriter, PageMerge
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+import subprocess
+import time
 
 app = Flask(__name__, static_folder='static', template_folder='static')
 OUTPUT_FOLDER = 'output'
@@ -27,7 +19,6 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 current_session_id = None
 current_file_prefix = None
 
-# === NEW CODE: Company template folder mapping ===
 COMPANY_TEMPLATES = {
     "ROYAL_SKY_INTERNATIONAL": 'templates/ROYAL',
     "NEW_VISION": 'templates/NEWVISION',
@@ -39,7 +30,6 @@ SHEET_NAME = {
     "NEW_VISION": 'NV',
     "SNS_GLOBLE": 'SNS'
 }
-# === END NEW CODE ===
 
 def replace_placeholders(doc, replacements):
     for paragraph in doc.paragraphs:
@@ -103,14 +93,37 @@ def fill_pdf_template(input_pdf_path, output_pdf_path, replacements):
         PageMerge(page).add(overlay_pdf.pages[0]).render()
     PdfWriter(output_pdf_path, trailer=template_pdf).write()
 
-def convert_docx_to_pdf_safe(input_path, output_path):
+def convert_docx_to_pdf(docx_path, output_dir=None, timeout=30):
+    """
+    Convert a DOCX file to PDF using LibreOffice (soffice) on Linux.
+    :param docx_path: Path to the input DOCX file.
+    :param output_dir: Directory to save the output PDF. If None, uses the DOCX directory.
+    :param timeout: Timeout for the conversion process in seconds.
+    :return: Path to the generated PDF file.
+    :raises: Exception if conversion fails.
+    """
+    if output_dir is None:
+        output_dir = os.path.dirname(docx_path)
+    os.makedirs(output_dir, exist_ok=True)
+    cmd = [
+        'soffice',  # or 'libreoffice' if that's the command on your system
+        '--headless',
+        '--convert-to', 'pdf',
+        '--outdir', output_dir,
+        docx_path
+    ]
     try:
-        pythoncom.CoInitialize()
-        convert(input_path, output_path)
-        pythoncom.CoUninitialize()
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        if result.returncode != 0:
+            raise Exception(f"LibreOffice conversion failed: {result.stderr.decode()}")
+        pdf_filename = os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
+        pdf_path = os.path.join(output_dir, pdf_filename)
+        if not os.path.exists(pdf_path):
+            raise Exception("PDF file was not created.")
+        return pdf_path
     except Exception as e:
         print(f"PDF conversion error: {e}")
-        raise
+        raise Exception(f"Error converting DOCX to PDF: {e}")
 
 @app.route('/')
 def index():
@@ -120,23 +133,16 @@ def index():
 def set_template():
     data = request.get_json()
     dropdown_data = data.get("company_name_dropdown")
-    print(f"Company Name from Dropdown {dropdown_data}")
-
-    # === UPDATED CODE: Use the global mapping for folder selection ===
     TEMPLATE_FOLDER = COMPANY_TEMPLATES.get(dropdown_data)
     SHEET = SHEET_NAME.get(dropdown_data)
     app.config["TEMPLATE_FOLDER"] = TEMPLATE_FOLDER
     app.config["SHEET_NAME"] = SHEET
-    # ✅ Hard-coded sheet URL here
     google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
     app.config["GOOGLE_SHEET_URL"] = google_sheet_url
-    # Add your logic here using TEMPLATE_FOLDER and SHEET_URL
     print(f"Using folder: {TEMPLATE_FOLDER}")
-    print(f"Using folder: {SHEET_NAME}")
-    print(f"Using sheet: {google_sheet_url}")
-
+    print(f"Using sheet: {SHEET}")
+    print(f"Using sheet URL: {google_sheet_url}")
     return jsonify({"message": "Template and sheet set successfully"})
-    # === END UPDATED CODE ===
 
 @app.route('/process', methods=['POST'])
 def process():
@@ -144,29 +150,23 @@ def process():
     try:
         data = request.get_json()
         passport_number = data.get("passportNumber")
-
         output_format = data.get("outputFormat", "pdf")
         sheet_name = app.config.get("SHEET_NAME")
-
-        # === FIX: Use .get() to avoid KeyError, and check for missing config ===
         google_sheet_url = app.config.get("GOOGLE_SHEET_URL")
         TEMPLATE_FOLDER = app.config.get("TEMPLATE_FOLDER")
         if not TEMPLATE_FOLDER or not os.path.exists(TEMPLATE_FOLDER):
             return jsonify({"success": False, "message": f"Template folder not found: {TEMPLATE_FOLDER}"})
         if not google_sheet_url:
             return jsonify({"success": False, "message": "Google Sheet URL not set. Please select a company first."})
-        # === END FIX ===
 
         sheet_id = google_sheet_url.split("/d/")[1].split("/")[0]
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
         response = requests.get(csv_url)
         response.raise_for_status()
-        # Always use the first row as header, skip blank lines
-        # --- AUTO-DETECT HEADER ROW ---
         csv_data = response.text
         lines = csv_data.splitlines()
         header_idx = None
-        for i, line in enumerate(lines[:5]):  # Check first 5 lines for a header
+        for i, line in enumerate(lines[:5]):
             if any('PASSPORTNO' in col.replace(' ', '').upper() for col in line.split(',')):
                 header_idx = i
                 break
@@ -174,25 +174,15 @@ def process():
             return jsonify({"success": False, "message": "PASSPORTNO column missing in sheet."})
 
         df = pd.read_csv(io.StringIO(csv_data), header=header_idx, dtype=str, skip_blank_lines=True)
-
-
         if 'PASSPORTNO' not in df.columns:
             return jsonify({"success": False, "message": "PASSPORTNO column missing in sheet."})
 
-        # Remove rows with missing passport numbers
         df = df[df['PASSPORTNO'].notnull() & (df['PASSPORTNO'] != '')]
-
-
-
         passport_row = df[df['PASSPORTNO'].astype(str) == str(passport_number)]
         if passport_row.empty:
             return jsonify({"success": False, "message": "Passport number not found."})
 
         passport_data = passport_row.iloc[-1].copy()
-
-        # No need to convert FEID or other columns to int, keep as string
-
-
         if 'VISAISSUEDATE' in passport_data and pd.notnull(passport_data['VISAISSUEDATE']):
             passport_data['VISAISSUEDATE'] = str(passport_data['VISAISSUEDATE'])
 
@@ -211,7 +201,6 @@ def process():
         phoneno = passport_data['PHONENO']
         passport_data['PHONENO'] = phoneno
 
-
         templates_path = os.path.join(TEMPLATE_FOLDER, str(country_name))
         if not os.path.exists(templates_path):
             return jsonify({"success": False, "message": f"Templates not found for country: {country_name}"})
@@ -222,21 +211,16 @@ def process():
         session_output = os.path.join(OUTPUT_FOLDER, session_id)
         os.makedirs(session_output, exist_ok=True)
 
-        # Map doc keys to file/template info
         DOC_MAP = {
             'agreement': ('agreement.docx', 'Agreement'),
             'request_letter': ('request_letter.docx', 'Request Letter'),
             'afi_noc': ('afi_noc.docx', 'Affidavit')
         }
-
-        selected_docs = data.get("selectedDocs", ['agreement', 'request_letter', 'afi_noc'])  # default: all
-
+        selected_docs = data.get("selectedDocs", ['agreement', 'request_letter', 'afi_noc'])
         template_files = [DOC_MAP[key] for key in selected_docs if key in DOC_MAP]
 
         replacements = passport_data.to_dict()
-
         files = []
-
 
         for template_file, display_name in template_files:
             pdf_template_path = os.path.join(templates_path, template_file.replace('.docx', '.pdf'))
@@ -257,14 +241,18 @@ def process():
             replace_placeholders(doc, replacements)
             output_docx = os.path.join(session_output, f"{output_name}.docx")
             doc.save(output_docx)
-
-            if output_format == "pdf" and DOCX2PDF_AVAILABLE:
-                output_pdf = os.path.join(session_output, f"{output_name}.pdf")
-                convert_docx_to_pdf_safe(output_docx, output_pdf)
-                files.append({
-                    "name": f"{output_name}.pdf",
-                    "url": f"/download/{session_id}/{output_name}.pdf"
-                })
+            if output_format == "pdf":
+                try:
+                    output_pdf = convert_docx_to_pdf(output_docx, session_output)
+                    files.append({
+                        "name": f"{output_name}.pdf",
+                        "url": f"/download/{session_id}/{output_name}.pdf"
+                    })
+                except Exception as e:
+                    files.append({
+                        "name": f"{output_name}.docx",
+                        "url": f"/download/{session_id}/{output_name}.docx"
+                    })
             else:
                 files.append({
                     "name": f"{output_name}.docx",
@@ -278,13 +266,28 @@ def process():
 
 @app.route('/download/<session_id>/<filename>')
 def download(session_id, filename):
-    return send_from_directory(os.path.join(OUTPUT_FOLDER, session_id), filename, as_attachment=True)
+    file_path = os.path.join(OUTPUT_FOLDER, session_id, filename)
+    if not os.path.exists(file_path):
+        return "File not found", 404
 
-# === UPDATED CODE: Accept both GET and POST for download-all ===
+    @after_this_request
+    def cleanup(response):
+        try:
+            # Wait a moment to ensure file is not locked (especially after conversion)
+            time.sleep(0.3)
+            os.remove(file_path)
+            session_dir = os.path.join(OUTPUT_FOLDER, session_id)
+            if os.path.exists(session_dir) and not os.listdir(session_dir):
+                os.rmdir(session_dir)
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+        return response
+
+    return send_file(file_path, as_attachment=True)
+
 @app.route('/download-all', methods=['GET', 'POST'])
 def download_all():
     global current_session_id, current_file_prefix
-    # For POST, allow session_id and file_prefix to be passed in request
     if request.method == 'POST':
         data = request.get_json() or {}
         session_id = data.get('session_id', current_session_id)
@@ -305,8 +308,17 @@ def download_all():
                 zipf.write(file_path, arcname=file)
     memory_file.seek(0)
     zip_name = f"{file_prefix}.zip" if file_prefix else "all_documents.zip"
+
+    @after_this_request
+    def cleanup(response):
+        import shutil
+        try:
+            shutil.rmtree(session_dir)
+        except Exception as e:
+            print(f"Error deleting session folder: {e}")
+        return response
+
     return send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name=zip_name)
-# === END UPDATED CODE ===
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
