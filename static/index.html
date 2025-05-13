@@ -703,7 +703,6 @@ function downloadAllFiles() {
   });
 }
 
-
 // Custom Dropdown JS
 document.addEventListener('DOMContentLoaded', function() {
   const select = document.querySelector('.select');
@@ -721,8 +720,6 @@ document.addEventListener('DOMContentLoaded', function() {
     option.addEventListener('click', () => {
       selected.textContent = option.textContent;
       hiddenInput.value = option.dataset.value;
-      // FIX: Trigger change event so /set-template is called!
-      hiddenInput.dispatchEvent(new Event('change'));
       select.classList.remove('open');
       options.style.display = 'none';
     });
@@ -766,8 +763,8 @@ document.getElementById('trackForm').addEventListener('submit', function(event) 
     body: JSON.stringify({
       passportNumber: passportNumber,
       outputFormat: outputFormat,
-      company: company,
-      selectedDocs: selectedDocs // <-- send selected docs
+      company: company,           // <-- send company with the rest
+      selectedDocs: selectedDocs  // <-- send selected docs
     })
   })
   .then(response => response.json())
@@ -791,17 +788,19 @@ document.getElementById('trackForm').addEventListener('submit', function(event) 
   });
 });
 
-document.getElementById('company').addEventListener('change', function() {
-  fetch('/set-template', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ company_name_dropdown: this.value })
-  })
-  .then(response => response.json())
-  .then(data => {
-    console.log('/set-template response:', data);
-  });
-});
+// === REMOVE THIS BLOCK ===
+// document.getElementById('company').addEventListener('change', function() {
+//   fetch('/set-template', {
+//     method: 'POST',
+//     headers: {'Content-Type': 'application/json'},
+//     body: JSON.stringify({ company_name_dropdown: this.value })
+//   })
+//   .then(response => response.json())
+//   .then(data => {
+//     console.log('/set-template response:', data);
+//   });
+// });
+
 
 </script>
 </body>

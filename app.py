@@ -8,8 +8,10 @@ import zipfile
 import requests
 from datetime import datetime
 import random
-
-
+# New Impport Statement Added for multiple request
+import threading
+docx2pdf_lock = threading.Lock()
+# End here 
 try:
     from docx2pdf import convert
     import pythoncom
@@ -24,9 +26,6 @@ from reportlab.lib.pagesizes import letter
 app = Flask(__name__, static_folder='static', template_folder='static')
 OUTPUT_FOLDER = 'output'
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-current_session_id = None
-current_file_prefix = None
 
 # === NEW CODE: Company template folder mapping ===
 COMPANY_TEMPLATES = {
@@ -104,59 +103,51 @@ def fill_pdf_template(input_pdf_path, output_pdf_path, replacements):
         PageMerge(page).add(overlay_pdf.pages[0]).render()
     PdfWriter(output_pdf_path, trailer=template_pdf).write()
 
+#Code Chnage Here From this 
+
 def convert_docx_to_pdf_safe(input_path, output_path):
     try:
         pythoncom.CoInitialize()
-        convert(input_path, output_path)
+        with docx2pdf_lock:  # <--- Only one thread at a time can run this
+            convert(input_path, output_path)
         pythoncom.CoUninitialize()
     except Exception as e:
         print(f"PDF conversion error: {e}")
         raise
 
+# to upto this 
+
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
 
-@app.route('/set-template', methods=['POST'])
-def set_template():
-    data = request.get_json()
-    dropdown_data = data.get("company_name_dropdown")
-    print(f"Company Name from Dropdown {dropdown_data}")
 
-    # === UPDATED CODE: Use the global mapping for folder selection ===
-    TEMPLATE_FOLDER = COMPANY_TEMPLATES.get(dropdown_data)
-    SHEET = SHEET_NAME.get(dropdown_data)
-    app.config["TEMPLATE_FOLDER"] = TEMPLATE_FOLDER
-    app.config["SHEET_NAME"] = SHEET
-    # ✅ Hard-coded sheet URL here
-    google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
-    app.config["GOOGLE_SHEET_URL"] = google_sheet_url
-    # Add your logic here using TEMPLATE_FOLDER and SHEET_URL
-    print(f"Using folder: {TEMPLATE_FOLDER}")
-    print(f"Using folder: {SHEET_NAME}")
-    print(f"Using sheet: {google_sheet_url}")
+# Here Remove Set-Template route and move this code in process route 
 
-    return jsonify({"message": "Template and sheet set successfully"})
-    # === END UPDATED CODE ===
 
 @app.route('/process', methods=['POST'])
 def process():
-    global current_session_id, current_file_prefix
     try:
         data = request.get_json()
         passport_number = data.get("passportNumber")
+        company = data.get("company")  # <-- Get company from POST data
 
+        # Moved logic from /set-template:
+        dropdown_data = company
+        TEMPLATE_FOLDER = COMPANY_TEMPLATES.get(dropdown_data)
+        SHEET = SHEET_NAME.get(dropdown_data)
+        # Hard-coded sheet URL here
+        google_sheet_url = "https://docs.google.com/spreadsheets/d/1vgXggucKcJ09xXJj-mjraFnk_PH3iCEKm1iv6Teq7UI/edit?gid=787616279#gid=787616279"
+        # Move code Upto This 
+        
+        
         output_format = data.get("outputFormat", "pdf")
-        sheet_name = app.config.get("SHEET_NAME")
+        sheet_name = SHEET
 
-        # === FIX: Use .get() to avoid KeyError, and check for missing config ===
-        google_sheet_url = app.config.get("GOOGLE_SHEET_URL")
-        TEMPLATE_FOLDER = app.config.get("TEMPLATE_FOLDER")
         if not TEMPLATE_FOLDER or not os.path.exists(TEMPLATE_FOLDER):
             return jsonify({"success": False, "message": f"Template folder not found: {TEMPLATE_FOLDER}"})
         if not google_sheet_url:
             return jsonify({"success": False, "message": "Google Sheet URL not set. Please select a company first."})
-        # === END FIX ===
 
         sheet_id = google_sheet_url.split("/d/")[1].split("/")[0]
         csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
@@ -176,14 +167,11 @@ def process():
 
         df = pd.read_csv(io.StringIO(csv_data), header=header_idx, dtype=str, skip_blank_lines=True)
 
-
         if 'PASSPORTNO' not in df.columns:
             return jsonify({"success": False, "message": "PASSPORTNO column missing in sheet."})
 
         # Remove rows with missing passport numbers
         df = df[df['PASSPORTNO'].notnull() & (df['PASSPORTNO'] != '')]
-
-
 
         passport_row = df[df['PASSPORTNO'].astype(str) == str(passport_number)]
         if passport_row.empty:
@@ -191,12 +179,8 @@ def process():
 
         passport_data = passport_row.iloc[-1].copy()
 
-        # No need to convert FEID or other columns to int, keep as string
-
-
         if 'VISAISSUEDATE' in passport_data and pd.notnull(passport_data['VISAISSUEDATE']):
             passport_data['VISAISSUEDATE'] = str(passport_data['VISAISSUEDATE'])
-
         for col in passport_data.index:
             val = passport_data[col]
             try:
@@ -212,14 +196,13 @@ def process():
         phoneno = passport_data['PHONENO']
         passport_data['PHONENO'] = phoneno
 
-
         templates_path = os.path.join(TEMPLATE_FOLDER, str(country_name))
         if not os.path.exists(templates_path):
             return jsonify({"success": False, "message": f"Templates not found for country: {country_name}"})
 
+        # === FIX: Use per-request session_id and file_prefix, NOT global variables === Here also change code Using Unique ID for new User
         session_id = str(uuid.uuid4())
-        current_session_id = session_id
-        current_file_prefix = f"{sr_no} {passport_number}"
+        file_prefix = f"{sr_no} {passport_number}"
         session_output = os.path.join(OUTPUT_FOLDER, session_id)
         os.makedirs(session_output, exist_ok=True)
 
@@ -237,7 +220,6 @@ def process():
         replacements = passport_data.to_dict()
 
         files = []
-
 
         for template_file, display_name in template_files:
             pdf_template_path = os.path.join(templates_path, template_file.replace('.docx', '.pdf'))
@@ -272,7 +254,8 @@ def process():
                     "url": f"/download/{session_id}/{output_name}.docx"
                 })
 
-        return jsonify({"success": True, "files": files})
+        # === Return session_id and file_prefix for download-all ===
+        return jsonify({"success": True, "files": files, "session_id": session_id, "file_prefix": file_prefix})
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -284,15 +267,14 @@ def download(session_id, filename):
 # === UPDATED CODE: Accept both GET and POST for download-all ===
 @app.route('/download-all', methods=['GET', 'POST'])
 def download_all():
-    global current_session_id, current_file_prefix
-    # For POST, allow session_id and file_prefix to be passed in request
+    # === NEW: Get session_id and file_prefix from request (not global) ===
     if request.method == 'POST':
         data = request.get_json() or {}
-        session_id = data.get('session_id', current_session_id)
-        file_prefix = data.get('file_prefix', current_file_prefix)
+        session_id = data.get('session_id')
+        file_prefix = data.get('file_prefix')
     else:
-        session_id = current_session_id
-        file_prefix = current_file_prefix
+        session_id = request.args.get('session_id')
+        file_prefix = request.args.get('file_prefix')
     if not session_id:
         return "No files to download. Generate documents first.", 404
     session_dir = os.path.join(OUTPUT_FOLDER, session_id)
