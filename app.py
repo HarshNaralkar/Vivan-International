@@ -8,9 +8,13 @@ import zipfile
 import requests
 from datetime import datetime
 import random
+
 # New Impport Statement Added for multiple request
+from flask import send_from_directory, after_this_request
 import threading
 docx2pdf_lock = threading.Lock()
+unoconv_lock = threading.Lock()
+
 # End here 
 try:
     from docx2pdf import convert
@@ -105,15 +109,25 @@ def fill_pdf_template(input_pdf_path, output_pdf_path, replacements):
 
 #Code Chnage Here From this 
 
-def convert_docx_to_pdf_safe(input_path, output_path):
+def convert_docx_to_pdf(docx_path, output_dir=None, timeout=30):
+    if output_dir is None:
+        output_dir = os.path.dirname(docx_path)
+
     try:
-        pythoncom.CoInitialize()
-        with docx2pdf_lock:  # <--- Only one thread at a time can run this
-            convert(input_path, output_path)
-        pythoncom.CoUninitialize()
+        with unoconv_lock:  # <--- Only one thread at a time can run this
+            with open(docx_path, 'rb') as f:
+                files = {'file': (os.path.basename(docx_path), f, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
+                response = requests.post('http://localhost:3001/convert', files=files, timeout=timeout)
+                if response.status_code != 200:
+                    raise Exception("Failed to convert using unoconv API")
+
+                pdf_filename = os.path.splitext(os.path.basename(docx_path))[0] + '.pdf'
+                pdf_path = os.path.join(output_dir, pdf_filename)
+                with open(pdf_path, 'wb') as out_file:
+                    out_file.write(response.content)
+                return pdf_path
     except Exception as e:
-        print(f"PDF conversion error: {e}")
-        raise
+        raise Exception(f"Error converting DOCX to PDF via unoconv API: {e}")
 
 # to upto this 
 
@@ -243,7 +257,7 @@ def process():
 
             if output_format == "pdf" and DOCX2PDF_AVAILABLE:
                 output_pdf = os.path.join(session_output, f"{output_name}.pdf")
-                convert_docx_to_pdf_safe(output_docx, output_pdf)
+                convert_docx_to_pdf(output_docx, output_pdf)
                 files.append({
                     "name": f"{output_name}.pdf",
                     "url": f"/download/{session_id}/{output_name}.pdf"
@@ -262,12 +276,28 @@ def process():
 
 @app.route('/download/<session_id>/<filename>')
 def download(session_id, filename):
-    return send_from_directory(os.path.join(OUTPUT_FOLDER, session_id), filename, as_attachment=True)
+    file_path = os.path.join(OUTPUT_FOLDER, session_id, filename)
+    session_folder = os.path.join(OUTPUT_FOLDER, session_id)
+
+    @after_this_request
+    def cleanup(response):
+        try:
+            # Remove the downloaded file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            # Optionally, remove the session folder if it's empty
+            if os.path.exists(session_folder) and not os.listdir(session_folder):
+                os.rmdir(session_folder)
+        except Exception as e:
+            print(f"Cleanup error (download): {e}")
+        return response
+
+    return send_from_directory(session_folder, filename, as_attachment=True)
 
 # === UPDATED CODE: Accept both GET and POST for download-all ===
 @app.route('/download-all', methods=['GET', 'POST'])
 def download_all():
-    # === NEW: Get session_id and file_prefix from request (not global) ===
+    # Get session_id and file_prefix from request (POST or GET)
     if request.method == 'POST':
         data = request.get_json() or {}
         session_id = data.get('session_id')
@@ -275,11 +305,14 @@ def download_all():
     else:
         session_id = request.args.get('session_id')
         file_prefix = request.args.get('file_prefix')
+
     if not session_id:
         return "No files to download. Generate documents first.", 404
+
     session_dir = os.path.join(OUTPUT_FOLDER, session_id)
     if not os.path.exists(session_dir):
         return "Session files not found", 404
+
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for file in os.listdir(session_dir):
@@ -288,6 +321,21 @@ def download_all():
                 zipf.write(file_path, arcname=file)
     memory_file.seek(0)
     zip_name = f"{file_prefix}.zip" if file_prefix else "all_documents.zip"
+
+    @after_this_request
+    def cleanup(response):
+        try:
+            # Remove all files in the session directory
+            for file in os.listdir(session_dir):
+                file_path = os.path.join(session_dir, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+            # Remove the session directory itself
+            os.rmdir(session_dir)
+        except Exception as e:
+            print(f"Cleanup error (download-all): {e}")
+        return response
+
     return send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name=zip_name)
 # === END UPDATED CODE ===
 
