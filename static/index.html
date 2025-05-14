@@ -527,6 +527,7 @@
 
 .checkbox-label {
   display: flex;
+  white-space: nowrap;
   align-items: center;
   margin-right: 24px;
   font-size: 1rem;
@@ -540,8 +541,7 @@
 <body>
 <div class="container">
   <header>
-    <img src="/static/cat.jpg" alt="Logo" class="logo">
-    <h1>HN Code</h1>
+    <h1>Documents Downloader</h1>
     <div id="template-dropdown" style="margin-left:auto;">
       <div class="select">
         <div class="selected" id="selected-company">-- Select a Company --</div>
@@ -558,7 +558,7 @@
   <div class="main-content">
     <div class="left-panel">
       <section class="status-section">
-        <h2>Documents downloader</h2>
+        <!-- Document Downloader Name was here  -->
         <form id="trackForm" autocomplete="off">
           <!-- HERE I WANT CHECK BOXS -->
           <div class="form-row">
@@ -583,7 +583,7 @@
                     <polyline class="check" points="11.78 18.12 15.55 22.23 25.17 12.87"></polyline>
                   </svg>
                 </div>
-                AFFDAVITE
+                Affidavite
               </label>
               <label class="checkbox-label">
                 <div class="checkbox-wrapper">
@@ -594,7 +594,7 @@
                     <polyline class="check" points="11.78 18.12 15.55 22.23 25.17 12.87"></polyline>
                   </svg>
                 </div>
-                Request_Letter
+                Request Letter
               </label>
               
             </div>
@@ -629,7 +629,6 @@
     </div>
   </div>
   <footer>
-    <img src="/static/cat 2.jpg" alt="Logo" class="logo" style="height:40px;width:40px;vertical-align:middle;">
   </footer>
 </div>
 <script>
@@ -757,35 +756,43 @@ document.getElementById('trackForm').addEventListener('submit', function(event) 
 
   document.getElementById('result').innerHTML = '<p>Processing...</p>';
 
-  fetch('/process', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      passportNumber: passportNumber,
-      outputFormat: outputFormat,
-      company: company,           // <-- send company with the rest
-      selectedDocs: selectedDocs  // <-- send selected docs
-    })
+fetch('/process', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({
+    passportNumber: passportNumber,
+    outputFormat: outputFormat,
+    company: company,
+    selectedDocs: selectedDocs
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      let resultHTML = '<h3>Documents generated</h3><ul>';
-      data.files.forEach(file => {
-        resultHTML += `<li>${file.name} ${createDownloadButton(file.url, file.name)}</li>`;
-      });
-      resultHTML += '</ul>';
-      if (data.files.length > 1) {
-        resultHTML += `<button class="download-all" onclick="downloadAllFiles()">Download All</button>`;
-      }
-      document.getElementById('result').innerHTML = resultHTML;
-    } else {
-      document.getElementById('result').innerHTML = `<p class="error">${data.message || data.error || 'Error generating documents'}</p>`;
+})
+.then(response => response.json())
+.then(data => {
+  if (data.success) {
+    let resultHTML = '<h3>Documents generated</h3><ul>';
+    data.files.forEach(file => {
+      resultHTML += `<li>${file.name} ${createDownloadButton(file.url, file.name)}</li>`;
+    });
+    resultHTML += '</ul>';
+    if (data.files.length > 1) {
+      resultHTML += `<button class="download-all" onclick="downloadAllFiles()">Download All</button>`;
     }
-  })
-  .catch(error => {
-    document.getElementById('result').innerHTML = `<p class="error">Network or server error: ${error.message}</p>`;
-  });
+    // Add missing values message if needed
+    if (data.problem_columns && data.problem_columns.length > 0) {
+      resultHTML += `<div style="color: #ff3c3c; margin-top: 10px; font-weight: 500;">
+        Note: Missing values in Columns : ${data.problem_columns.join(', ')}
+      </div>`;
+    }
+    document.getElementById('result').innerHTML = resultHTML;
+  } else {
+    document.getElementById('result').innerHTML = `<p class="error">${data.message || data.error || 'Error generating documents'}</p>`;
+  }
+})
+.catch(error => {
+  document.getElementById('result').innerHTML = `<p class="error">Network or server error: ${error.message}</p>`;
+});
+
+  
 });
 
 // === REMOVE THIS BLOCK ===

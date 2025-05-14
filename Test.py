@@ -203,7 +203,13 @@ def process():
       problem_columns = []
       for col in passport_data.index:
             val = passport_data[col]
-            if pd.isnull(val) or val == '' or (isinstance(val, (int, float, np.integer, np.floating)) and float(val) == 0):
+            if pd.isnull(val):
+                problem_columns.append(col)
+            elif isinstance(val, str) and val.strip() == '':
+                problem_columns.append(col)
+            elif isinstance(val, (int, float, np.integer, np.floating)) and float(val) == 0:
+                problem_columns.append(col)
+            elif isinstance(val, str) and val.strip() == '0':
                 problem_columns.append(col)
 
       if 'VISAISSUEDATE' in passport_data and pd.notnull(passport_data['VISAISSUEDATE']):
